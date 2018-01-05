@@ -1,10 +1,10 @@
 import tensorflow as tf
 from data_related.data_reader import *
+from data_related.batch_producer import *
 
 
 class Config(object):
     def __init__(self):
-        self.test_flag = False
         self.entity_embedding_size = 128
         self.relation_embedding_size = 128
         self.margin = 1.0
@@ -15,11 +15,10 @@ class Config(object):
 
 
 class TransEModel(object):
-    def __init__(self, config):
+    def __init__(self, config, is_training):
         batch_size = config.batch_size
-        test_flag = config.test_flag
         margin = config.margin
-        entity_embedding_size = config.embedding_size
+        entity_embedding_size = config.entity_embedding_size
         relation_embedding_size = config.relation_embedding_size
         entity_num = config.entity_num
         relation_num = config.relation_num
@@ -27,11 +26,11 @@ class TransEModel(object):
 
         self.pos_h = tf.placeholder(tf.int32, [batch_size])
         self.pos_r = tf.placeholder(tf.int32, [batch_size])
-        self.pos_e = tf.placeholder(tf.int32, [batch_size])
+        self.pos_t = tf.placeholder(tf.int32, [batch_size])
 
         self.neg_h = tf.placeholder(tf.int32, [batch_size])
         self.neg_r = tf.placeholder(tf.int32, [batch_size])
-        self.neg_e = tf.placeholder(tf.int32, [batch_size])
+        self.neg_t = tf.placeholder(tf.int32, [batch_size])
 
         with tf.device("/cpu:0"):
             self.entity_embeddings = tf.get_variable("entity_embeddings", [entity_num, entity_embedding_size], dtype=tf.float32)
@@ -39,18 +38,18 @@ class TransEModel(object):
 
             embedded_pos_h = tf.nn.embedding_lookup(self.entity_embeddings, self.pos_h)
             embedded_pos_r = tf.nn.embedding_lookup(self.relation_embeddings, self.pos_r)
-            embedded_pos_e = tf.nn.embedding_lookup(self.entity_embeddings, self.pos_e)
+            embedded_pos_e = tf.nn.embedding_lookup(self.entity_embeddings, self.pos_t)
 
             embedded_neg_h = tf.nn.embedding_lookup(self.entity_embeddings, self.neg_h)
             embedded_neg_r = tf.nn.embedding_lookup(self.relation_embeddings, self.neg_r)
-            embedded_neg_e = tf.nn.embedding_lookup(self.entity_embeddings, self.neg_e)
+            embedded_neg_e = tf.nn.embedding_lookup(self.entity_embeddings, self.neg_t)
 
         pos = tf.reduce_sum((embedded_pos_h + embedded_pos_r - embedded_pos_e) ** 2, 1, True)
         neg = tf.reduce_sum((embedded_neg_h + embedded_neg_r - embedded_neg_e) ** 2, 1, True)
 
         self.loss = tf.reduce_sum(tf.maximum(pos - neg + margin, 0))
 
-        if not test_flag:
+        if is_training:
             global_step = tf.contrib.framework.get_or_create_global_step()
             learning_rate = tf.train.exponential_decay(
                 base_learning_rate,
@@ -76,8 +75,81 @@ def main():
     test_triple = read_triple(test2id_file)
     valid_triple = read_triple(valid2id_file)
 
+    train_record_file = "data/train.tfrecords"
+    test_record_file = "data/test.tfrecords"
+    tfrecord_write(train_triple, train_record_file)
+    tfrecord_write(test_triple, test_record_file)
+    train_head_raw, train_relation_raw, train_tail_raw = tfrecord_read(train_record_file)
+    test_head_raw, test_relation_raw, test_tail_raw = tfrecord_read(test_record_file)
+    train_head_batch, train_relation_batch, train_tail_batch = tf.train.shuffle_batch([train_head_raw, train_relation_raw, train_tail_raw],
+                                                                                      batch_size=32,
+                                                                                      capacity=483142,
+                                                                                      min_after_dequeue=1000)
+
+    test_head_batch, test_relation_batch, test_tail_batch = tf.train.shuffle_batch([test_head_raw, test_relation_raw, test_tail_raw],
+                                                                                   batch_size=32,
+                                                                                   capacity=59071,
+                                                                                   min_after_dequeue=1000)
 
 
+    with tf.name_scope('Train'):
+        with tf.variable_scope("Model", reuse=None):
+            model = TransEModel(config, is_training=True)
+
+    with tf.name_scope('Test'):
+        with tf.variable_scope("Model", reuse=True):
+            test_model = TransEModel(config, is_training=False)
+
+    sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth = True
+    with tf.Session(config=sess_config) as sess:
+        tf.global_variables_initializer().run()
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+        for i in range(10):
+            # training_input = sess.run(training_input_batch)
+            train_head, train_relation, train_tail = sess.run([train_head_batch, train_relation_batch, train_tail_batch])
+
+            neg_tail = train_tail
+            for j in range(len(train_tail)):
+                neg_tail[j] += 1
+
+            loss, opt = sess.run([model.loss, model.train_op], feed_dict={
+                model.pos_h: train_head,
+                model.pos_r: train_relation,
+                model.pos_t: train_tail,
+                model.neg_h: train_head,
+                model.neg_r: train_relation,
+                model.neg_t: neg_tail
+            })
+
+            if i % 100 == 0:
+                test_head, test_relation, test_tail = sess.run([test_head_batch, test_relation_batch, test_tail_batch])
+                neg_test_tail = test_tail
+                for k in range(len(train_tail)):
+                    neg_test_tail[k] += 1
+                test_loss = sess.run([test_model.loss], feed_dict={
+                    test_model.pos_h: test_head,
+                    test_model.pos_r: test_relation,
+                    test_model.pos_t: test_tail,
+                    test_model.neg_h: test_head,
+                    test_model.neg_r: test_relation,
+                    test_model.neg_t:neg_test_tail
+                })
+
+                print("-----------------------------------------------")
+                print("step: " + str(i))
+                print("train_loss: ")
+                print(loss)
+                print("test_loss: ")
+                print(test_loss)
+                print("-----------------------------------------------")
+
+
+            # print(train_head)
+            # print(train_relation)
+            # print(train_tail)
+            # print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~`")
 
 
 if __name__ == '__main__':
