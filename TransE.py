@@ -106,7 +106,7 @@ def main():
         tf.global_variables_initializer().run()
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-        for i in range(10):
+        for i in range(1000000):
             # training_input = sess.run(training_input_batch)
             train_head, train_relation, train_tail = sess.run([train_head_batch, train_relation_batch, train_tail_batch])
 
@@ -123,7 +123,7 @@ def main():
                 model.neg_t: neg_tail
             })
 
-            if i % 100 == 0:
+            if i % 1000 == 0:
                 test_head, test_relation, test_tail = sess.run([test_head_batch, test_relation_batch, test_tail_batch])
                 neg_test_tail = test_tail
                 for k in range(len(train_tail)):
@@ -145,13 +145,8 @@ def main():
                 print(test_loss)
                 print("-----------------------------------------------")
 
-
-            # print(train_head)
-            # print(train_relation)
-            # print(train_tail)
-            # print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~`")
-
-
+        coord.request_stop()
+        coord.join(threads)
 if __name__ == '__main__':
     main()
 
