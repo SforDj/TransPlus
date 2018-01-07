@@ -25,6 +25,7 @@ class TransPlusModel(object):
         entity_num = config.entity_num
         relation_num = config.relation_num
         base_learning_rate = config.base_learning_rate
+        base_learning_rate_softmax = config.base_learning_rate_softmax
 
         self.pos_h = tf.placeholder(tf.int32, [batch_size])
         self.pos_r = tf.placeholder(tf.int32, [batch_size])
@@ -38,7 +39,9 @@ class TransPlusModel(object):
             self.entity_embeddings = tf.get_variable("entity_embeddings", [entity_num, entity_embedding_size], dtype=tf.float32)
             self.relation_embeddings = tf.get_variable("relation_embeddings", [relation_num, relation_embedding_size], dtype=tf.float32)
 
-            self.transfer_matrix = tf.get_variable("transfer_matrix", [relation_embedding_size, entity_embedding_size], dtype=tf.float32)
+            diag = [1.0 for i in range(0, relation_embedding_size)]
+
+            self.transfer_matrix = tf.get_variable("transfer_matrix", dtype=tf.float32, initializer=tf.diag(diagonal=diag))
 
             embedded_pos_h = tf.nn.embedding_lookup(self.entity_embeddings, self.pos_h)
             embedded_pos_r = tf.nn.embedding_lookup(self.relation_embeddings, self.pos_r)
@@ -48,20 +51,28 @@ class TransPlusModel(object):
             embedded_neg_r = tf.nn.embedding_lookup(self.relation_embeddings, self.neg_r)
             embedded_neg_t = tf.nn.embedding_lookup(self.entity_embeddings, self.neg_t)
 
+        self.transe_pos = tf.reduce_sum((embedded_pos_h + embedded_pos_r - embedded_pos_t) ** 2, 1, True)
+        self.transe_neg = tf.reduce_sum((embedded_neg_h + embedded_neg_r - embedded_neg_t) ** 2, 1, True)
+
         self.pos = tf.reduce_sum((tf.matmul(embedded_pos_h + embedded_pos_r, self.transfer_matrix) - embedded_pos_t) ** 2, 1, True)
         self.neg = tf.reduce_sum((tf.matmul(embedded_neg_h + embedded_neg_r, self.transfer_matrix) - embedded_neg_t) ** 2, 1, True)
 
-        self.loss = tf.reduce_sum(tf.maximum(self.pos - self.neg + margin, 0)) + tf.abs(tf.reduce_sum(tf.matmul(self.transfer_matrix, self.transfer_matrix)) - 1) * 0.5
+        self.transe_loss = tf.reduce_sum(tf.maximum(self.transe_pos - self.transe_neg + margin, 0))
+        self.loss = tf.reduce_sum(tf.maximum(self.pos - self.neg + margin, 0)) + tf.abs(tf.reduce_sum(tf.subtract(self.transfer_matrix ** 2, tf.diag(diag)))) * 0.5
 
         softmax_weights = tf.get_variable('softmax_weights', [entity_embedding_size, entity_num], dtype=tf.float32)
         softmax_biases = tf.get_variable('softmax_biases', [entity_num], dtype=tf.float32)
-        softmax_logits = tf.matmul(tf.matmul(embedded_neg_h + embedded_neg_r, self.transfer_matrix), softmax_weights) + softmax_biases
+
+        softmax_logits = tf.matmul(tf.matmul(embedded_pos_h + embedded_pos_r, self.transfer_matrix), softmax_weights) + softmax_biases
+        transe_softmax_logits = tf.matmul(embedded_pos_h + embedded_pos_r, softmax_weights) + softmax_biases
+
         self.softmax_pred = tf.argmax(tf.nn.softmax(softmax_logits), axis=-1)
+        self.transe_softmax_pred = tf.argmax(tf.nn.softmax(transe_softmax_logits), axis=-1)
 
         softmax_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=tf.reshape(self.pos_t, [batch_size]), logits=softmax_logits, name='softmax_loss'
         )
-        self.softmax_loss = tf.reduce_mean(softmax_loss) + tf.abs(tf.reduce_sum(tf.matmul(self.transfer_matrix, self.transfer_matrix)) - 1) * 0.5
+        self.softmax_loss = tf.reduce_mean(softmax_loss) + tf.abs(tf.reduce_sum(tf.subtract(self.transfer_matrix ** 2, tf.diag(diag)))) * 0.5
 
         correct_prediction = tf.equal(tf.cast(tf.argmax(softmax_logits, -1), dtype=tf.int32),
                                       tf.reshape(self.pos_t, [batch_size]))
@@ -76,6 +87,26 @@ class TransPlusModel(object):
         self.softmax_top100_accuracy = tf.reduce_mean(tf.cast(top100_correction_predcition, tf.float32))
 
 
+        #
+        transe_softmax_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=tf.reshape(self.pos_t, [batch_size]), logits=transe_softmax_logits, name='softmax_loss'
+        )
+        self.transe_softmax_loss = tf.reduce_mean(transe_softmax_loss) + tf.abs(
+            tf.reduce_sum(tf.subtract(self.transfer_matrix ** 2, tf.diag(diag)))) * 0.5
+
+        transe_correct_prediction = tf.equal(tf.cast(tf.argmax(transe_softmax_logits, -1), dtype=tf.int32),
+                                      tf.reshape(self.pos_t, [batch_size]))
+        self.transe_softmax_accuracy = tf.reduce_mean(tf.cast(transe_correct_prediction, tf.float32))
+
+        transe_top10_correction_predcition = tf.nn.in_top_k(predictions=transe_softmax_logits,
+                                                            targets=tf.reshape(self.pos_t, [batch_size]), k=10)
+        self.transe_softmax_top10_accuracy = tf.reduce_mean(tf.cast(transe_top10_correction_predcition, tf.float32))
+
+        transe_top100_correction_predcition = tf.nn.in_top_k(predictions=transe_softmax_logits,
+                                                             targets=tf.reshape(self.pos_t, [batch_size]), k=100)
+        self.transe_softmax_top100_accuracy = tf.reduce_mean(tf.cast(transe_top100_correction_predcition, tf.float32))
+
+
 
         if is_training:
             global_step = tf.contrib.framework.get_or_create_global_step()
@@ -86,8 +117,16 @@ class TransPlusModel(object):
                 0.98
             )
 
+            learning_rate_softmax = tf.train.exponential_decay(
+                base_learning_rate_softmax,
+                global_step,
+                300,
+                0.98
+            )
+
             self.train_op = tf.train.GradientDescentOptimizer(learning_rate).minimize(self.loss)
-            self.softmax_train_op = tf.train.GradientDescentOptimizer(learning_rate).minimize(self.softmax_loss)
+            self.softmax_train_op = tf.train.GradientDescentOptimizer(learning_rate_softmax).minimize(self.softmax_loss)
+            self.transe_softmax_train_op = tf.train.GradientDescentOptimizer(learning_rate_softmax).minimize(self.transe_softmax_loss)
 
 
 def main():
