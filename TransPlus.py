@@ -6,14 +6,16 @@ from data_related.batch_producer import *
 
 class Config(object):
     def __init__(self):
-        self.entity_embedding_size = 128
-        self.relation_embedding_size = 128
+        self.entity_embedding_size = 32
+        self.relation_embedding_size = 32
         self.margin = 2.0
         self.relation_num = 1345
         self.entity_num = 14951
         self.batch_size = 64
         self.base_learning_rate = 0.01
         self.base_learning_rate_softmax = 1.0
+
+        self.transplus_learning_rate_softmax = 0.01
 
 
 class TransPlusModel(object):
@@ -26,6 +28,7 @@ class TransPlusModel(object):
         relation_num = config.relation_num
         base_learning_rate = config.base_learning_rate
         base_learning_rate_softmax = config.base_learning_rate_softmax
+        transplus_learning_rate_softmax = config.transplus_learning_rate_softmax
 
         self.pos_h = tf.placeholder(tf.int32, [batch_size])
         self.pos_r = tf.placeholder(tf.int32, [batch_size])
@@ -58,7 +61,7 @@ class TransPlusModel(object):
         self.neg = tf.reduce_sum((tf.matmul(embedded_neg_h + embedded_neg_r, self.transfer_matrix) - embedded_neg_t) ** 2, 1, True)
 
         self.transe_loss = tf.reduce_sum(tf.maximum(self.transe_pos - self.transe_neg + margin, 0))
-        self.loss = tf.reduce_sum(tf.maximum(self.pos - self.neg + margin, 0)) + tf.abs(tf.reduce_sum(tf.subtract(self.transfer_matrix ** 2, tf.diag(diag)))) * 0.5
+        self.loss = tf.reduce_sum(tf.maximum(self.pos - self.neg + margin, 0)) + tf.abs(tf.reduce_sum(tf.subtract(self.transfer_matrix ** 2, tf.diag(diag)))) * 0.05
 
         softmax_weights = tf.get_variable('softmax_weights', [entity_embedding_size, entity_num], dtype=tf.float32)
         softmax_biases = tf.get_variable('softmax_biases', [entity_num], dtype=tf.float32)
@@ -72,7 +75,7 @@ class TransPlusModel(object):
         softmax_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=tf.reshape(self.pos_t, [batch_size]), logits=softmax_logits, name='softmax_loss'
         )
-        self.softmax_loss = tf.reduce_mean(softmax_loss) + tf.abs(tf.reduce_sum(tf.subtract(self.transfer_matrix ** 2, tf.diag(diag)))) * 0.5
+        self.softmax_loss = tf.reduce_mean(softmax_loss) + tf.abs(tf.reduce_sum(tf.subtract(self.transfer_matrix ** 2, tf.diag(diag)))) * 0.05
 
         correct_prediction = tf.equal(tf.cast(tf.argmax(softmax_logits, -1), dtype=tf.int32),
                                       tf.reshape(self.pos_t, [batch_size]))
@@ -124,8 +127,16 @@ class TransPlusModel(object):
                 0.98
             )
 
+            transplus_learning_rate_softmax = tf.train.exponential_decay(
+                transplus_learning_rate_softmax,
+                global_step,
+                300,
+                0.98
+            )
+
             self.train_op = tf.train.GradientDescentOptimizer(learning_rate).minimize(self.loss)
-            self.softmax_train_op = tf.train.GradientDescentOptimizer(learning_rate_softmax).minimize(self.softmax_loss)
+            self.transe_train_op = tf.train.GradientDescentOptimizer(learning_rate).minimize(self.transe_loss)
+            self.softmax_train_op = tf.train.GradientDescentOptimizer(transplus_learning_rate_softmax).minimize(self.softmax_loss)
             self.transe_softmax_train_op = tf.train.GradientDescentOptimizer(learning_rate_softmax).minimize(self.transe_softmax_loss)
 
 
@@ -183,55 +194,35 @@ def main():
                 neg_tail[j] += 1
                 neg_tail[j] %= config.entity_num
 
-            loss, opt = sess.run([model.loss, model.train_op], feed_dict={
-                model.pos_h: train_head,
-                model.pos_r: train_relation,
-                model.pos_t: train_tail,
-                model.neg_h: train_head,
-                model.neg_r: train_relation,
-                model.neg_t: neg_tail
-            })
 
-            softmax_loss, softmax_opt = sess.run([model.softmax_loss, model.softmax_train_op], feed_dict={
-                model.pos_h: train_head,
-                model.pos_r: train_relation,
-                model.pos_t: train_tail,
-                model.neg_h: train_head,
-                model.neg_r: train_relation,
-                model.neg_t: neg_tail
-            })
-
-
-            if i % 1000 == 0:
-                test_head, test_relation, test_tail = sess.run([test_head_batch, test_relation_batch, test_tail_batch])
-                neg_test_tail = copy.copy(test_tail)
-                for k in range(len(train_tail)):
-                    neg_test_tail[k] += 1
-                    neg_test_tail %= config.entity_num
-
-                test_loss, test_softmax_loss = sess.run([test_model.loss, test_model.softmax_loss], feed_dict={
-                    test_model.pos_h: test_head,
-                    test_model.pos_r: test_relation,
-                    test_model.pos_t: test_tail,
-                    test_model.neg_h: test_head,
-                    test_model.neg_r: test_relation,
-                    test_model.neg_t: neg_test_tail
+            if i > 100000:
+                loss, opt = sess.run([model.loss, model.train_op], feed_dict={
+                    model.pos_h: train_head,
+                    model.pos_r: train_relation,
+                    model.pos_t: train_tail,
+                    model.neg_h: train_head,
+                    model.neg_r: train_relation,
+                    model.neg_t: neg_tail
                 })
 
-                top_1_acc_train, top_10_acc_train, top_100_acc_train = sess.run(
-                    [model.softmax_accuracy, model.softmax_top10_accuracy,
-                     model.softmax_top100_accuracy], feed_dict={
-                        model.pos_h: train_head,
-                        model.pos_r: train_relation,
-                        model.pos_t: train_tail,
-                        model.neg_h: train_head,
-                        model.neg_r: train_relation,
-                        model.neg_t: neg_tail
-                    })
+                softmax_loss, softmax_opt = sess.run([model.softmax_loss, model.softmax_train_op], feed_dict={
+                    model.pos_h: train_head,
+                    model.pos_r: train_relation,
+                    model.pos_t: train_tail,
+                    model.neg_h: train_head,
+                    model.neg_r: train_relation,
+                    model.neg_t: neg_tail
+                })
 
-                top_1_acc, top_10_acc, top_100_acc = sess.run(
-                    [test_model.softmax_accuracy, test_model.softmax_top10_accuracy,
-                     test_model.softmax_top100_accuracy], feed_dict={
+
+                if i % 1000 == 0:
+                    test_head, test_relation, test_tail = sess.run([test_head_batch, test_relation_batch, test_tail_batch])
+                    neg_test_tail = copy.copy(test_tail)
+                    for k in range(len(train_tail)):
+                        neg_test_tail[k] += 1
+                        neg_test_tail %= config.entity_num
+
+                    test_loss, test_softmax_loss = sess.run([test_model.loss, test_model.softmax_loss], feed_dict={
                         test_model.pos_h: test_head,
                         test_model.pos_r: test_relation,
                         test_model.pos_t: test_tail,
@@ -240,35 +231,145 @@ def main():
                         test_model.neg_t: neg_test_tail
                     })
 
-                print("************************************************")
-                print("step: " + str(i))
+                    top_1_acc_train, top_10_acc_train, top_100_acc_train = sess.run(
+                        [model.softmax_accuracy, model.softmax_top10_accuracy,
+                         model.softmax_top100_accuracy], feed_dict={
+                            model.pos_h: train_head,
+                            model.pos_r: train_relation,
+                            model.pos_t: train_tail,
+                            model.neg_h: train_head,
+                            model.neg_r: train_relation,
+                            model.neg_t: neg_tail
+                        })
 
-                print("train_loss: ")
-                print(loss)
-                print("train_softmax_loss: ")
-                print(softmax_loss)
-                print("test_loss: ")
-                print(test_loss)
-                print("test_softmax_loss: ")
-                print(test_softmax_loss)
+                    top_1_acc, top_10_acc, top_100_acc = sess.run(
+                        [test_model.softmax_accuracy, test_model.softmax_top10_accuracy,
+                         test_model.softmax_top100_accuracy], feed_dict={
+                            test_model.pos_h: test_head,
+                            test_model.pos_r: test_relation,
+                            test_model.pos_t: test_tail,
+                            test_model.neg_h: test_head,
+                            test_model.neg_r: test_relation,
+                            test_model.neg_t: neg_test_tail
+                        })
 
-                print("-----------------------------------------------")
+                    print("************************************************")
+                    print("step: " + str(i))
 
-                print("train_top_1_acc: ")
-                print(top_1_acc_train)
-                print("train_top_10_acc: ")
-                print(top_10_acc_train)
-                print("train_top_100_acc: ")
-                print(top_100_acc_train)
-                print("-----------------------------------------------")
+                    print("train_loss: ")
+                    print(loss)
+                    print("train_softmax_loss: ")
+                    print(softmax_loss)
+                    print("test_loss: ")
+                    print(test_loss)
+                    print("test_softmax_loss: ")
+                    print(test_softmax_loss)
 
-                print("top_1_acc: ")
-                print(top_1_acc)
-                print("top_10_acc: ")
-                print(top_10_acc)
-                print("top_100_acc: ")
-                print(top_100_acc)
-                print("************************************************")
+                    print("-----------------------------------------------")
+
+                    print("train_top_1_acc: ")
+                    print(top_1_acc_train)
+                    print("train_top_10_acc: ")
+                    print(top_10_acc_train)
+                    print("train_top_100_acc: ")
+                    print(top_100_acc_train)
+                    print("-----------------------------------------------")
+
+                    print("top_1_acc: ")
+                    print(top_1_acc)
+                    print("top_10_acc: ")
+                    print(top_10_acc)
+                    print("top_100_acc: ")
+                    print(top_100_acc)
+                    print("************************************************")
+
+            else:
+                loss, opt = sess.run([model.transe_loss, model.transe_train_op], feed_dict={
+                    model.pos_h: train_head,
+                    model.pos_r: train_relation,
+                    model.pos_t: train_tail,
+                    model.neg_h: train_head,
+                    model.neg_r: train_relation,
+                    model.neg_t: neg_tail
+                })
+
+                softmax_loss, softmax_opt = sess.run([model.transe_softmax_loss, model.transe_softmax_train_op], feed_dict={
+                    model.pos_h: train_head,
+                    model.pos_r: train_relation,
+                    model.pos_t: train_tail,
+                    model.neg_h: train_head,
+                    model.neg_r: train_relation,
+                    model.neg_t: neg_tail
+                })
+
+                if i % 1000 == 0:
+                    test_head, test_relation, test_tail = sess.run(
+                        [test_head_batch, test_relation_batch, test_tail_batch])
+                    neg_test_tail = copy.copy(test_tail)
+                    for k in range(len(train_tail)):
+                        neg_test_tail[k] += 1
+                        neg_test_tail %= config.entity_num
+
+                    test_loss, test_softmax_loss = sess.run([test_model.transe_loss, test_model.transe_softmax_loss], feed_dict={
+                        test_model.pos_h: test_head,
+                        test_model.pos_r: test_relation,
+                        test_model.pos_t: test_tail,
+                        test_model.neg_h: test_head,
+                        test_model.neg_r: test_relation,
+                        test_model.neg_t: neg_test_tail
+                    })
+
+                    top_1_acc_train, top_10_acc_train, top_100_acc_train = sess.run(
+                        [model.transe_softmax_accuracy, model.transe_softmax_top10_accuracy,
+                         model.transe_softmax_top100_accuracy], feed_dict={
+                            model.pos_h: train_head,
+                            model.pos_r: train_relation,
+                            model.pos_t: train_tail,
+                            model.neg_h: train_head,
+                            model.neg_r: train_relation,
+                            model.neg_t: neg_tail
+                        })
+
+                    top_1_acc, top_10_acc, top_100_acc = sess.run(
+                        [test_model.transe_softmax_accuracy, test_model.transe_softmax_top10_accuracy,
+                         test_model.transe_softmax_top100_accuracy], feed_dict={
+                            test_model.pos_h: test_head,
+                            test_model.pos_r: test_relation,
+                            test_model.pos_t: test_tail,
+                            test_model.neg_h: test_head,
+                            test_model.neg_r: test_relation,
+                            test_model.neg_t: neg_test_tail
+                        })
+
+                    print("************************************************")
+                    print("step: " + str(i))
+
+                    print("train_loss: ")
+                    print(loss)
+                    print("train_softmax_loss: ")
+                    print(softmax_loss)
+                    print("test_loss: ")
+                    print(test_loss)
+                    print("test_softmax_loss: ")
+                    print(test_softmax_loss)
+
+                    print("-----------------------------------------------")
+
+                    print("train_top_1_acc: ")
+                    print(top_1_acc_train)
+                    print("train_top_10_acc: ")
+                    print(top_10_acc_train)
+                    print("train_top_100_acc: ")
+                    print(top_100_acc_train)
+                    print("-----------------------------------------------")
+
+                    print("top_1_acc: ")
+                    print(top_1_acc)
+                    print("top_10_acc: ")
+                    print(top_10_acc)
+                    print("top_100_acc: ")
+                    print(top_100_acc)
+                    print("************************************************")
 
 
         coord.request_stop()

@@ -6,9 +6,9 @@ from data_related.batch_producer import *
 
 class Config(object):
     def __init__(self):
-        self.entity_embedding_size = 64
-        self.relation_embedding_size = 64
-        self.margin = 1.0
+        self.entity_embedding_size = 32
+        self.relation_embedding_size = 32
+        self.margin = 2.0
         self.relation_num = 1345
         self.entity_num = 14951
         self.batch_size = 64

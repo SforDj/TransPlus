@@ -6,8 +6,8 @@ from data_related.batch_producer import *
 
 class Config(object):
     def __init__(self):
-        self.entity_embedding_size = 128
-        self.relation_embedding_size = 128
+        self.entity_embedding_size = 32
+        self.relation_embedding_size = 32
         self.margin = 2.0
         self.relation_num = 1345
         self.entity_num = 14951
@@ -124,7 +124,7 @@ def main():
     train_head_batch=tf.reshape(train_head_batch,[-1])
 
     test_head_batch, test_relation_batch, test_tail_batch = tf.train.shuffle_batch([test_head_raw, test_relation_raw, test_tail_raw],
-                                                                                   batch_size=config.batch_size,
+                                                                                   batch_size=config.batch_size * 100,
                                                                                    capacity=59071,
                                                                                    min_after_dequeue=1000)
 
