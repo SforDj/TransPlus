@@ -124,7 +124,7 @@ def main():
     train_head_batch=tf.reshape(train_head_batch,[-1])
 
     test_head_batch, test_relation_batch, test_tail_batch = tf.train.shuffle_batch([test_head_raw, test_relation_raw, test_tail_raw],
-                                                                                   batch_size=config.batch_size * 100,
+                                                                                   batch_size=config.batch_size,
                                                                                    capacity=59071,
                                                                                    min_after_dequeue=1000)
 
@@ -169,23 +169,7 @@ def main():
                 model.neg_t: neg_tail
             })
 
-
             if i % 1000 == 0:
-                test_head, test_relation, test_tail = sess.run([test_head_batch, test_relation_batch, test_tail_batch])
-                neg_test_tail = copy.copy(test_tail)
-                for k in range(len(train_tail)):
-                    neg_test_tail[k] += 1
-                    neg_test_tail %= config.entity_num
-
-                test_loss, test_softmax_loss = sess.run([test_model.loss, test_model.softmax_loss], feed_dict={
-                    test_model.pos_h: test_head,
-                    test_model.pos_r: test_relation,
-                    test_model.pos_t: test_tail,
-                    test_model.neg_h: test_head,
-                    test_model.neg_r: test_relation,
-                    test_model.neg_t: neg_test_tail
-                })
-
                 top_1_acc_train, top_10_acc_train, top_100_acc_train = sess.run(
                     [model.softmax_accuracy, model.softmax_top10_accuracy,
                      model.softmax_top100_accuracy], feed_dict={
@@ -196,10 +180,20 @@ def main():
                         model.neg_r: train_relation,
                         model.neg_t: neg_tail
                     })
+                test_loss_total = 0.0
+                test_softmax_loss_total = 0.0
+                top_1_acc_total = 0.0
+                top_10_acc_total = 0.0
+                top_100_acc_total = 0.0
 
-                top_1_acc, top_10_acc, top_100_acc = sess.run(
-                    [test_model.softmax_accuracy, test_model.softmax_top10_accuracy,
-                     test_model.softmax_top100_accuracy], feed_dict={
+                for test_rounds in range(0, 100):
+                    test_head, test_relation, test_tail = sess.run([test_head_batch, test_relation_batch, test_tail_batch])
+                    neg_test_tail = copy.copy(test_tail)
+                    for k in range(len(train_tail)):
+                        neg_test_tail[k] += 1
+                        neg_test_tail %= config.entity_num
+
+                    test_loss, test_softmax_loss = sess.run([test_model.loss, test_model.softmax_loss], feed_dict={
                         test_model.pos_h: test_head,
                         test_model.pos_r: test_relation,
                         test_model.pos_t: test_tail,
@@ -207,6 +201,34 @@ def main():
                         test_model.neg_r: test_relation,
                         test_model.neg_t: neg_test_tail
                     })
+
+
+
+                    top_1_acc, top_10_acc, top_100_acc = sess.run(
+                        [test_model.softmax_accuracy, test_model.softmax_top10_accuracy,
+                         test_model.softmax_top100_accuracy], feed_dict={
+                            test_model.pos_h: test_head,
+                            test_model.pos_r: test_relation,
+                            test_model.pos_t: test_tail,
+                            test_model.neg_h: test_head,
+                            test_model.neg_r: test_relation,
+                            test_model.neg_t: neg_test_tail
+                        })
+
+                    test_loss_total += test_loss
+                    test_softmax_loss_total += test_softmax_loss
+
+                    top_1_acc_total += top_1_acc
+                    top_10_acc_total += top_10_acc
+                    top_100_acc_total += top_100_acc
+
+                test_loss_total /= 100.0
+                test_softmax_loss_total /= 100.0
+                top_1_acc_total /= 100.0
+                top_10_acc_total /= 100.0
+                top_100_acc_total /= 100.0
+
+
 
                 print("************************************************")
                 print("step: " + str(i))
@@ -216,9 +238,9 @@ def main():
                 print("train_softmax_loss: ")
                 print(softmax_loss)
                 print("test_loss: ")
-                print(test_loss)
+                print(test_loss_total)
                 print("test_softmax_loss: ")
-                print(test_softmax_loss)
+                print(test_softmax_loss_total)
 
                 print("-----------------------------------------------")
 
@@ -231,11 +253,11 @@ def main():
                 print("-----------------------------------------------")
 
                 print("top_1_acc: ")
-                print(top_1_acc)
+                print(top_1_acc_total)
                 print("top_10_acc: ")
-                print(top_10_acc)
+                print(top_10_acc_total)
                 print("top_100_acc: ")
-                print(top_100_acc)
+                print(top_100_acc_total)
                 print("************************************************")
 
         coord.request_stop()
